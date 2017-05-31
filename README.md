@@ -2,6 +2,6 @@
 
 GoLang SQS Queue Poller using the AWS SDK
 
-This is based off of [golang-sqs-worker-example](https://github.com/nabeken/golang-sqs-worker-example) but it uses the [official AWS golang SDK](https://github.com/aws/aws-sdk-go).
+This was forked from [h2ik's golang poller](https://github.com/h2ik/go-sqs-poller) but with modifications made to allow multiple queues to be properly polled in a single go executable.
 
-Check out the [cmd/example-worker](cmd/example-worker) directory for examples of how to use the worker.
+This required some small changes to the API

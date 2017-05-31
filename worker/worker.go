@@ -12,6 +12,13 @@ import (
 // HandlerFunc is used to define the Handler that is run on for each message
 type HandlerFunc func(msg *sqs.Message) error
 
+type Config struct {
+	QueueURL string
+	MaxNumberOfMessage int64
+	WaitTimeSecond int64
+	Log LoggerIFace
+}
+
 func (f HandlerFunc) HandleMessage(msg *sqs.Message) error {
 	return f(msg)
 }
@@ -34,33 +41,47 @@ func NewInvalidEventError(event, msg string) InvalidEventError {
 	return InvalidEventError{event: event, msg: msg}
 }
 
+func DefaultConfigForQueueURL(url string) Config {
+	var config = Config {
+		QueueURL: url,
+		MaxNumberOfMessage: 10,
+		WaitTimeSecond: 20,
+		Log: &logger{},
+	}
+	return config
+}
+
 // Exported Variables
 var (
-	// what is the queue url we are connecting to, Defaults to empty
-	QueueURL string = ""
-	// The maximum number of messages to return. Amazon SQS never returns more messages
-	// than this value (however, fewer messages might be returned). Valid values
-	// are 1 to 10. Default is 10.
-	MaxNumberOfMessage int64 = 10
-	// The duration (in seconds) for which the call waits for a message to arrive
-	// in the queue before returning. If a message is available, the call returns
-	// sooner than WaitTimeSeconds.
-	WaitTimeSecond int64 = 20
-
-	Log LoggerIFace = &logger{}
+	DefaultConfig Config = Config{
+		// what is the queue url we are connecting to, Defaults to empty
+		QueueURL: "",
+		// The maximum number of messages to return. Amazon SQS never returns more messages
+		// than this value (however, fewer messages might be returned). Valid values
+		// are 1 to 10. Default is 10.
+		MaxNumberOfMessage: 10,
+		// The duration (in seconds) for which the call waits for a message to arrive
+		// in the queue before returning. If a message is available, the call returns
+		// sooner than WaitTimeSeconds.
+		WaitTimeSecond: 20,
+		Log: &logger{},
+	}
 )
 
 // Start starts the polling and will continue polling till the application is forcibly stopped
-func Start(svc *sqs.SQS, h Handler) {
+func Start(config *Config, svc *sqs.SQS, h Handler) {
 	for {
-		Log.Debug("worker: Start Polling")
+		if config == nil {
+			config = &DefaultConfig
+		}
+		config.Log.Debug("worker: Start Polling")
 		params := &sqs.ReceiveMessageInput{
-			QueueUrl:            aws.String(QueueURL), // Required
-			MaxNumberOfMessages: aws.Int64(MaxNumberOfMessage),
+			QueueUrl:            aws.String(config.QueueURL), // Required
+			MaxNumberOfMessages: aws.Int64(config.MaxNumberOfMessage),
 			MessageAttributeNames: []*string{
 				aws.String("All"), // Required
 			},
-			WaitTimeSeconds: aws.Int64(WaitTimeSecond),
+			WaitTimeSeconds: aws.Int64(config.WaitTimeSecond),
 		}
 
 		resp, err := svc.ReceiveMessage(params)
@@ -69,15 +90,15 @@ func Start(svc *sqs.SQS, h Handler) {
 			continue
 		}
 		if len(resp.Messages) > 0 {
-			run(svc, h, resp.Messages)
+			run(config, svc, h, resp.Messages)
 		}
 	}
 }
 
 // poll launches goroutine per received message and wait for all message to be processed
-func run(svc *sqs.SQS, h Handler, messages []*sqs.Message) {
+func run(config *Config, svc *sqs.SQS, h Handler, messages []*sqs.Message) {
 	numMessages := len(messages)
-	Log.Info(fmt.Sprintf("worker: Received %d messages", numMessages))
+	config.Log.Info(fmt.Sprintf("worker: Received %d messages", numMessages))
 
 	var wg sync.WaitGroup
 	wg.Add(numMessages)
@@ -85,8 +106,8 @@ func run(svc *sqs.SQS, h Handler, messages []*sqs.Message) {
 		go func(m *sqs.Message) {
 			// launch goroutine
 			defer wg.Done()
-			if err := handleMessage(svc, m, h); err != nil {
-				Log.Error(err.Error())
+			if err := handleMessage(config, svc, m, h); err != nil {
+				config.Log.Error(err.Error())
 			}
 		}(messages[i])
 	}
@@ -94,24 +115,24 @@ func run(svc *sqs.SQS, h Handler, messages []*sqs.Message) {
 	wg.Wait()
 }
 
-func handleMessage(svc *sqs.SQS, m *sqs.Message, h Handler) error {
+func handleMessage(config *Config, svc *sqs.SQS, m *sqs.Message, h Handler) error {
 	var err error
 	err = h.HandleMessage(m)
 	if _, ok := err.(InvalidEventError); ok {
-		Log.Error(err.Error())
+		config.Log.Error(err.Error())
 	} else if err != nil {
 		return err
 	}
 
 	params := &sqs.DeleteMessageInput{
-		QueueUrl:      aws.String(QueueURL), // Required
+		QueueUrl:      aws.String(config.QueueURL), // Required
 		ReceiptHandle: m.ReceiptHandle,      // Required
 	}
 	_, err = svc.DeleteMessage(params)
 	if err != nil {
 		return err
 	}
-	Log.Debug(fmt.Sprintf("worker: deleted message from queue: %s", aws.StringValue(m.ReceiptHandle)))
+	config.Log.Debug(fmt.Sprintf("worker: deleted message from queue: %s", aws.StringValue(m.ReceiptHandle)))
 
 	return nil
 }
